@@ -82,6 +82,7 @@
 #include "lib/btimers.h"
 #include "include/jcr.h"
 #include "lib/berrno.h"
+#include "lib/scsi_crypto.h"
 
 #ifndef O_NONBLOCK
 #  define O_NONBLOCK 0
@@ -924,6 +925,16 @@ bool Device::close(DeviceControlRecord* dcr)
     Dmsg2(100, "device %s already closed vol=%s\n", print_name(),
           VolHdr.VolumeName);
     goto bail_out; /* already closed */
+  }
+
+  if (device_type == DeviceType::B_TAPE_DEV && device_resource
+      && device_resource->drive_crypto_enabled
+      && (IsCryptoEnabled()
+          || (device_resource->query_crypto_status
+              && IsScsiEncryptionEnabled(fd, archive_device_string)))) {
+    if (ClearScsiEncryptionKey(fd, archive_device_string)) {
+      ClearCryptoEnabled();
+    }
   }
 
   if (!norewindonclose) { OfflineOrRewind(); }
