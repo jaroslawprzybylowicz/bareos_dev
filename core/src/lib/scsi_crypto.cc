@@ -28,6 +28,8 @@
 
 #include "include/bareos.h"
 
+#include <openssl/crypto.h>
+
 /* Forward referenced functions */
 
 static void IndentStatusMsg(POOLMEM*& status, const char* msg, int indent);
@@ -74,8 +76,11 @@ bool SetScsiEncryptionKey(int fd, const char* device_name, char* encryption_key)
   auto cdb
       = BuildScsiSecurityCdb(SCSI_SPOUT_OPCODE, SPOUT_SET_DATA_ENCRYPTION_PAGE,
                              static_cast<uint32_t>(sizeof(sps)));
-  return send_scsi_cmd_page(fd, device_name, &cdb, sizeof(cdb), &sps,
-                            sizeof(sps));
+  const bool ok = send_scsi_cmd_page(fd, device_name, &cdb, sizeof(cdb), &sps,
+                                     sizeof(sps));
+  OPENSSL_cleanse(key_bytes.data(), key_bytes.size());
+  OPENSSL_cleanse(&sps, sizeof(sps));
+  return ok;
 }
 
 /*
