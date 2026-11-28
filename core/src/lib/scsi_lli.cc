@@ -49,12 +49,13 @@
 #      define SIOC_REQSENSE _IOR('C', 0x02, SCSI_PAGE_SENSE)
 #    endif
 
-static bool ExecuteLinuxSgIo(int fd,
-                             void* cdb,
-                             unsigned int cdb_len,
-                             void* cmd_page,
-                             unsigned int cmd_page_len,
-                             int direction)
+static ScsiIoResult ExecuteLinuxSgIo(int fd,
+                                     void* cdb,
+                                     unsigned int cdb_len,
+                                     void* cmd_page,
+                                     unsigned int cmd_page_len,
+                                     int direction,
+                                     bool is_final_attempt)
 {
   sg_io_hdr_t io_hdr;
   SCSI_PAGE_SENSE sense;
@@ -75,25 +76,28 @@ static bool ExecuteLinuxSgIo(int fd,
 
     Emsg2(M_ERROR, 0, T_("Unable to perform SG_IO ioctl on fd %d: ERR=%s\n"),
           fd, be.bstrerror());
-    return false;
+    return {false, {}};
   }
 
   if ((io_hdr.info & SG_INFO_OK_MASK) != SG_INFO_OK) {
     const ScsiSenseInfo decoded = DecodeScsiSense(
         {reinterpret_cast<const uint8_t*>(&sense), io_hdr.sb_len_wr});
-    Emsg3(M_ERROR, 0,
+    if (is_final_attempt || !decoded.IsUnitAttention()) {
+      Emsg3(
+          M_ERROR, 0,
           T_("Failed with info 0x%02x mask status 0x%02x msg status 0x%02x\n"),
           io_hdr.info, io_hdr.masked_status, io_hdr.msg_status);
-    Emsg2(M_ERROR, 0, T_("     host status 0x%02x driver status 0x%02x\n"),
-          io_hdr.host_status, io_hdr.driver_status);
-    if (decoded.valid) {
-      Emsg3(M_ERROR, 0, T_("     sense key 0x%02x asc 0x%02x ascq 0x%02x\n"),
-            decoded.sense_key, decoded.asc, decoded.ascq);
+      Emsg2(M_ERROR, 0, T_("     host status 0x%02x driver status 0x%02x\n"),
+            io_hdr.host_status, io_hdr.driver_status);
+      if (decoded.valid) {
+        Emsg3(M_ERROR, 0, T_("     sense key 0x%02x asc 0x%02x ascq 0x%02x\n"),
+              decoded.sense_key, decoded.asc, decoded.ascq);
+      }
     }
-    return false;
+    return {false, decoded};
   }
 
-  return true;
+  return {true, {}};
 }
 
 // Core interface function to lowlevel SCSI interface.
@@ -120,8 +124,17 @@ static inline bool do_scsi_cmd_page([[maybe_unused]] int fd,
     opened_device = true;
   }
 
-  const bool retval
-      = ExecuteLinuxSgIo(fd, cdb, cdb_len, cmd_page, cmd_page_len, direction);
+  const bool retval = RunScsiWithUnitAttentionRetry(
+      [&](bool is_final_attempt) {
+        return ExecuteLinuxSgIo(fd, cdb, cdb_len, cmd_page, cmd_page_len,
+                                direction, is_final_attempt);
+      },
+      [](const ScsiSenseInfo& sense) {
+        Dmsg3(100,
+              "SCSI UNIT ATTENTION (SK=0x%02x ASC=0x%02x ASCQ=0x%02x), "
+              "retrying\n",
+              sense.sense_key, sense.asc, sense.ascq);
+      });
 
   // See if we opened the device in this function, if so close it.
   if (opened_device) { close(fd); }

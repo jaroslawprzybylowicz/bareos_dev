@@ -170,6 +170,11 @@ struct ScsiSenseInfo {
   uint8_t sense_key{0};
   uint8_t asc{0};
   uint8_t ascq{0};
+
+  constexpr bool IsUnitAttention() const noexcept
+  {
+    return valid && sense_key == 0x06;
+  }
 };
 
 constexpr ScsiSenseInfo DecodeScsiSense(std::span<const uint8_t> sense) noexcept
@@ -198,6 +203,31 @@ constexpr ScsiSenseInfo DecodeScsiSense(std::span<const uint8_t> sense) noexcept
     return {true, static_cast<uint8_t>(sense[1] & 0x0f), sense[2], sense[3]};
   }
   return {};
+}
+
+inline constexpr int kMaxScsiUnitAttentionRetries = 3;
+
+struct ScsiIoResult {
+  bool ok{false};
+  ScsiSenseInfo sense{};
+};
+
+template <typename StepFn, typename OnRetryFn>
+constexpr bool RunScsiWithUnitAttentionRetry(StepFn&& step,
+                                             OnRetryFn&& on_retry,
+                                             int max_retries
+                                             = kMaxScsiUnitAttentionRetries)
+{
+  for (int attempt = 0; attempt <= max_retries; ++attempt) {
+    const ScsiIoResult res = step(attempt == max_retries);
+    if (res.ok) { return true; }
+    if (res.sense.IsUnitAttention() && attempt < max_retries) {
+      on_retry(res.sense);
+      continue;
+    }
+    return false;
+  }
+  return false;
 }
 
 bool RecvScsiCmdPage(int fd,

@@ -203,6 +203,110 @@ TEST_F(ScsiLliLinuxSgIoTest, FdMinusOneWithMissingDeviceFailsWithoutIoctl)
   EXPECT_EQ(calls, 0u);
 }
 
+
+TEST_F(ScsiLliLinuxSgIoTest, RetriesTransientUnitAttentionOnSameFdAndSucceeds)
+{
+  char tmpl[] = "/tmp/bareos_scsi_lli_ua_XXXXXX";
+  const int tmp_fd = mkstemp(tmpl);
+  ASSERT_GE(tmp_fd, 0);
+  close(tmp_fd);
+
+  std::array<uint8_t, 6> cdb{};
+  std::array<uint8_t, 16> page{};
+  int first_fd = -1;
+  std::size_t calls = 0;
+
+  g_sg_io_handler = [&](int fd, sg_io_hdr_t* hdr) -> int {
+    ++calls;
+    if (calls == 1) {
+      first_fd = fd;
+    } else {
+      EXPECT_EQ(fd, first_fd);
+    }
+    if (calls <= 3) {
+      constexpr std::array<uint8_t, 18> kUa
+          = {0x70, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x0a, 0x00,
+             0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00};
+      std::memcpy(hdr->sbp, kUa.data(), kUa.size());
+      hdr->sb_len_wr = kUa.size();
+      hdr->info = SG_INFO_CHECK;
+      return 0;
+    }
+    hdr->info = SG_INFO_OK;
+    return 0;
+  };
+
+  EXPECT_TRUE(RecvScsiCmdPage(-1, tmpl, cdb.data(), cdb.size(), page.data(),
+                              page.size()));
+  EXPECT_EQ(calls, 4u);
+  ASSERT_GE(first_fd, 0);
+  errno = 0;
+  EXPECT_EQ(fcntl(first_fd, F_GETFD), -1);
+  EXPECT_EQ(errno, EBADF);
+  unlink(tmpl);
+}
+
+TEST_F(ScsiLliLinuxSgIoTest, FailsAfterMaxUnitAttentionRetriesAndClosesFd)
+{
+  char tmpl[] = "/tmp/bareos_scsi_lli_uafail_XXXXXX";
+  const int tmp_fd = mkstemp(tmpl);
+  ASSERT_GE(tmp_fd, 0);
+  close(tmp_fd);
+
+  std::array<uint8_t, 6> cdb{};
+  std::array<uint8_t, 16> page{};
+  int captured_fd = -1;
+  std::size_t calls = 0;
+
+  g_sg_io_handler = [&](int fd, sg_io_hdr_t* hdr) -> int {
+    ++calls;
+    captured_fd = fd;
+    constexpr std::array<uint8_t, 18> kUa
+        = {0x70, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x0a, 0x00,
+           0x00, 0x00, 0x00, 0x29, 0x00, 0x00, 0x00, 0x00, 0x00};
+    std::memcpy(hdr->sbp, kUa.data(), kUa.size());
+    hdr->sb_len_wr = kUa.size();
+    hdr->info = SG_INFO_CHECK;
+    return 0;
+  };
+
+  EXPECT_FALSE(send_scsi_cmd_page(-1, tmpl, cdb.data(), cdb.size(), page.data(),
+                                  page.size()));
+  EXPECT_EQ(calls, 4u);
+  ASSERT_GE(captured_fd, 0);
+  errno = 0;
+  EXPECT_EQ(fcntl(captured_fd, F_GETFD), -1);
+  EXPECT_EQ(errno, EBADF);
+  unlink(tmpl);
+}
+
+TEST_F(ScsiLliLinuxSgIoTest, DoesNotRetryNonUnitAttentionSense)
+{
+  int pipe_fds[2]{-1, -1};
+  ASSERT_EQ(pipe(pipe_fds), 0);
+
+  std::array<uint8_t, 6> cdb{};
+  std::array<uint8_t, 16> page{};
+  std::size_t calls = 0;
+
+  g_sg_io_handler = [&](int, sg_io_hdr_t* hdr) -> int {
+    ++calls;
+    constexpr std::array<uint8_t, 8> kIllegalReq
+        = {0x72, 0x05, 0x26, 0x00, 0x00, 0x00, 0x00, 0x00};
+    std::memcpy(hdr->sbp, kIllegalReq.data(), kIllegalReq.size());
+    hdr->sb_len_wr = kIllegalReq.size();
+    hdr->info = SG_INFO_CHECK;
+    return 0;
+  };
+
+  EXPECT_FALSE(send_scsi_cmd_page(pipe_fds[0], "/unused", cdb.data(),
+                                  cdb.size(), page.data(), page.size()));
+  EXPECT_EQ(calls, 1u);
+  EXPECT_NE(fcntl(pipe_fds[0], F_GETFD), -1);
+  close(pipe_fds[0]);
+  close(pipe_fds[1]);
+}
+
 }  // namespace
 #endif
 
@@ -241,6 +345,26 @@ TEST(ScsiLliSenseTest, DecodeInvalidOrEmptySenseReturnsInvalid)
   constexpr std::array<uint8_t, 4> kUnknown = {0x00, 0x06, 0x28, 0x00};
   EXPECT_FALSE(DecodeScsiSense({}).valid);
   EXPECT_FALSE(DecodeScsiSense(kUnknown).valid);
+}
+
+static_assert(kDecodedUa.IsUnitAttention());
+static_assert(!kDecodedDesc.IsUnitAttention());
+
+TEST(ScsiLliSenseTest, HelperPassesFinalAttemptFlagOnRetries)
+{
+  std::size_t calls = 0;
+  std::size_t retries_logged = 0;
+  const bool ok = RunScsiWithUnitAttentionRetry(
+      [&](bool is_final_attempt) -> ScsiIoResult {
+        ++calls;
+        EXPECT_EQ(is_final_attempt, calls == 4);
+        if (calls <= 3) { return {false, {true, 0x06, 0x28, 0x00}}; }
+        return {true, {}};
+      },
+      [&](const ScsiSenseInfo&) { ++retries_logged; });
+  EXPECT_TRUE(ok);
+  EXPECT_EQ(calls, 4u);
+  EXPECT_EQ(retries_logged, 3u);
 }
 
 }  // namespace
