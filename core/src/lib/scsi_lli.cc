@@ -2,7 +2,7 @@
    BAREOS® - Backup Archiving REcovery Open Sourced
 
    Copyright (C) 2011-2012 Planets Communications B.V.
-   Copyright (C) 2013-2024 Bareos GmbH & Co. KG
+   Copyright (C) 2013-2026 Bareos GmbH & Co. KG
 
    This program is Free Software; you can redistribute it and/or
    modify it under the terms of version three of the GNU Affero General Public
@@ -49,6 +49,47 @@
 #      define SIOC_REQSENSE _IOR('C', 0x02, SCSI_PAGE_SENSE)
 #    endif
 
+static bool ExecuteLinuxSgIo(int fd,
+                             void* cdb,
+                             unsigned int cdb_len,
+                             void* cmd_page,
+                             unsigned int cmd_page_len,
+                             int direction)
+{
+  sg_io_hdr_t io_hdr;
+  SCSI_PAGE_SENSE sense;
+
+  memset(&sense, 0, sizeof(sense));
+  memset(&io_hdr, 0, sizeof(io_hdr));
+  io_hdr.interface_id = 'S';
+  io_hdr.cmd_len = cdb_len;
+  io_hdr.mx_sb_len = sizeof(sense);
+  io_hdr.dxfer_direction = direction;
+  io_hdr.dxfer_len = cmd_page_len;
+  io_hdr.dxferp = (char*)cmd_page;
+  io_hdr.cmdp = (unsigned char*)cdb;
+  io_hdr.sbp = (unsigned char*)&sense;
+
+  if (ioctl(fd, SG_IO, &io_hdr) < 0) {
+    BErrNo be;
+
+    Emsg2(M_ERROR, 0, T_("Unable to perform SG_IO ioctl on fd %d: ERR=%s\n"),
+          fd, be.bstrerror());
+    return false;
+  }
+
+  if ((io_hdr.info & SG_INFO_OK_MASK) != SG_INFO_OK) {
+    Emsg3(M_ERROR, 0,
+          T_("Failed with info 0x%02x mask status 0x%02x msg status 0x%02x\n"),
+          io_hdr.info, io_hdr.masked_status, io_hdr.msg_status);
+    Emsg2(M_ERROR, 0, T_("     host status 0x%02x driver status 0x%02x\n"),
+          io_hdr.host_status, io_hdr.driver_status);
+    return false;
+  }
+
+  return true;
+}
+
 // Core interface function to lowlevel SCSI interface.
 static inline bool do_scsi_cmd_page([[maybe_unused]] int fd,
                                     const char* device_name,
@@ -58,11 +99,7 @@ static inline bool do_scsi_cmd_page([[maybe_unused]] int fd,
                                     unsigned int cmd_page_len,
                                     int direction)
 {
-  int rc;
-  sg_io_hdr_t io_hdr;
-  SCSI_PAGE_SENSE sense;
   bool opened_device = false;
-  bool retval = false;
 
   // See if we need to open the device_name or if we got an open filedescriptor.
   if (fd == -1) {
@@ -77,38 +114,9 @@ static inline bool do_scsi_cmd_page([[maybe_unused]] int fd,
     opened_device = true;
   }
 
-  memset(&sense, 0, sizeof(sense));
-  memset(&io_hdr, 0, sizeof(io_hdr));
-  io_hdr.interface_id = 'S';
-  io_hdr.cmd_len = cdb_len;
-  io_hdr.mx_sb_len = sizeof(sense);
-  io_hdr.dxfer_direction = direction;
-  io_hdr.dxfer_len = cmd_page_len;
-  io_hdr.dxferp = (char*)cmd_page;
-  io_hdr.cmdp = (unsigned char*)cdb;
-  io_hdr.sbp = (unsigned char*)&sense;
+  const bool retval
+      = ExecuteLinuxSgIo(fd, cdb, cdb_len, cmd_page, cmd_page_len, direction);
 
-  rc = ioctl(fd, SG_IO, &io_hdr);
-  if (rc < 0) {
-    BErrNo be;
-
-    Emsg2(M_ERROR, 0, T_("Unable to perform SG_IO ioctl on fd %d: ERR=%s\n"),
-          fd, be.bstrerror());
-    goto bail_out;
-  }
-
-  if ((io_hdr.info & SG_INFO_OK_MASK) != SG_INFO_OK) {
-    Emsg3(M_ERROR, 0,
-          T_("Failed with info 0x%02x mask status 0x%02x msg status 0x%02x\n"),
-          io_hdr.info, io_hdr.masked_status, io_hdr.msg_status);
-    Emsg2(M_ERROR, 0, T_("     host status 0x%02x driver status 0x%02x\n"),
-          io_hdr.host_status, io_hdr.driver_status);
-    goto bail_out;
-  }
-
-  retval = true;
-
-bail_out:
   // See if we opened the device in this function, if so close it.
   if (opened_device) { close(fd); }
 
