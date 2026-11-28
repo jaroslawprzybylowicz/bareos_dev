@@ -36,67 +36,41 @@ static void IndentStatusMsg(POOLMEM*& status, const char* msg, int indent);
 
 #ifdef HAVE_LOWLEVEL_SCSI_INTERFACE
 
-// Store a value as 2 bytes MSB/LSB
-static inline void set_2_byte_value(unsigned char* field, int value)
-{
-  field[0] = (unsigned char)((value & 0xff00) >> 8);
-  field[1] = (unsigned char)(value & 0x00ff);
-}
-
 /*
  * Clear an encryption key used by a tape drive
  * using a lowlevel SCSI interface.
  *
- * The device is send a:
+ * The device is sent a:
  * - SPOUT Security Protocol OUT SCSI CDB. (0xB5)
- * - SPOUT Send Encryption Key Page. (0x10)
- *
- * The Send Encryption Key page has the encryption
- * and decryption set to disabled and the key is empty.
+ * - SPOUT Set Data Encryption Page (0x10), 20 bytes (keyLength = 0).
  */
 bool ClearScsiEncryptionKey(int fd, const char* device_name)
 {
-  SPP_PAGE_SDE sps{};
-  set_2_byte_value(sps.pageCode, SPOUT_SET_DATA_ENCRYPTION_PAGE);
-  set_2_byte_value(sps.length, sizeof(sps) - 4);
-  sps.nexusScope = SPP_NEXUS_SC_ALL_I_T_NEXUS;
-  sps.encryptionMode = SPP_ENCR_MODE_DISABLE;
-  sps.decryptionMode = SPP_DECR_MODE_DISABLE;
-  sps.algorithmIndex = 0x01;
-  sps.kadFormat = SPP_KAD_KEY_FORMAT_NORMAL;
-  set_2_byte_value(sps.keyLength, SPP_KEY_LENGTH);
-
+  auto page = BuildClearDataEncryptionPage();
   auto cdb
       = BuildScsiSecurityCdb(SCSI_SPOUT_OPCODE, SPOUT_SET_DATA_ENCRYPTION_PAGE,
-                             static_cast<uint32_t>(sizeof(sps)));
-  return send_scsi_cmd_page(fd, device_name, &cdb, sizeof(cdb), &sps,
-                            sizeof(sps));
+                             static_cast<uint32_t>(page.size()));
+  return send_scsi_cmd_page(fd, device_name, &cdb, sizeof(cdb), page.data(),
+                            static_cast<unsigned int>(page.size()));
 }
 
 /*
  * Set an encryption key used by a tape drive
  * using a lowlevel SCSI interface.
  *
- * The device is send a:
+ * The device is sent a:
  * - SPOUT Security Protocol OUT SCSI CDB. (0xB5)
- * - SPOUT Send Encryption Key Page. (0x10)
- *
- * The Send Encryption Key page has the encryption
- * and decryption set to not disabled and the key is filled.
+ * - SPOUT Set Data Encryption Page (0x10).
  */
 bool SetScsiEncryptionKey(int fd, const char* device_name, char* encryption_key)
 {
-  SPP_PAGE_SDE sps{};
-  set_2_byte_value(sps.pageCode, SPOUT_SET_DATA_ENCRYPTION_PAGE);
-  set_2_byte_value(sps.length, sizeof(sps) - 4);
-  sps.nexusScope = SPP_NEXUS_SC_ALL_I_T_NEXUS;
-  sps.encryptionMode = SPP_ENCR_MODE_ENCRYPT;
-  sps.decryptionMode = SPP_DECR_MODE_MIXED;
-  sps.algorithmIndex = 0x01;
-  sps.kadFormat = SPP_KAD_KEY_FORMAT_NORMAL;
-  set_2_byte_value(sps.keyLength, SPP_KEY_LENGTH);
-  bstrncpy((char*)sps.keyData, encryption_key, SPP_KEY_LENGTH);
+  if (!encryption_key) { return false; }
 
+  std::array<uint8_t, SPP_KEY_LENGTH> key_bytes{};
+  bstrncpy(reinterpret_cast<char*>(key_bytes.data()), encryption_key,
+           SPP_KEY_LENGTH);
+
+  SPP_PAGE_SDE sps = BuildSetDataEncryptionPage(key_bytes);
   auto cdb
       = BuildScsiSecurityCdb(SCSI_SPOUT_OPCODE, SPOUT_SET_DATA_ENCRYPTION_PAGE,
                              static_cast<uint32_t>(sizeof(sps)));

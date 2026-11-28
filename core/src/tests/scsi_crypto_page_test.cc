@@ -98,26 +98,23 @@ TEST_F(ScsiCryptoWireTest, ClearScsiEncryptionKeyWireBytes)
   EXPECT_EQ(g_last_send.device_name, "/dev/sg99");
 
   const std::vector<uint8_t> expected_cdb = {
-      0xb5, 0x20, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x00, 0x00};
+      0xb5, 0x20, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00};
   EXPECT_EQ(g_last_send.cdb, expected_cdb);
 
-  ASSERT_EQ(g_last_send.page.size(), 52u);
+  ASSERT_EQ(g_last_send.page.size(), 20u);
   EXPECT_EQ(g_last_send.page[0], 0x00);
   EXPECT_EQ(g_last_send.page[1], 0x10);
   EXPECT_EQ(g_last_send.page[2], 0x00);
-  EXPECT_EQ(g_last_send.page[3], 0x30);
+  EXPECT_EQ(g_last_send.page[3], 0x10);  // 16-byte header payload
   EXPECT_EQ(g_last_send.page[4], 0x40);  // ALL_I_T_NEXUS
-  EXPECT_EQ(g_last_send.page[5], 0x00);
+  EXPECT_EQ(g_last_send.page[5], 0x40);  // CEEM = NO_ENCR_CHECK, CKOD = 0
   EXPECT_EQ(g_last_send.page[6], SPP_ENCR_MODE_DISABLE);
   EXPECT_EQ(g_last_send.page[7], SPP_DECR_MODE_DISABLE);
   EXPECT_EQ(g_last_send.page[8], 0x01);
-  EXPECT_EQ(g_last_send.page[9], 0x00);
+  EXPECT_EQ(g_last_send.page[9], SPP_KAD_KEY_FORMAT_NORMAL);
   EXPECT_EQ(g_last_send.page[10], 0x00);
   EXPECT_EQ(g_last_send.page[18], 0x00);
-  EXPECT_EQ(g_last_send.page[19], 0x20);
-  for (std::size_t i = 20; i < 52; ++i) {
-    EXPECT_EQ(g_last_send.page[i], 0x00);
-  }
+  EXPECT_EQ(g_last_send.page[19], 0x00);  // keyLength = 0
 }
 
 TEST_F(ScsiCryptoWireTest, SetScsiEncryptionKeyWireBytes)
@@ -141,7 +138,7 @@ TEST_F(ScsiCryptoWireTest, SetScsiEncryptionKeyWireBytes)
   EXPECT_EQ(g_last_send.page[2], 0x00);
   EXPECT_EQ(g_last_send.page[3], 0x30);
   EXPECT_EQ(g_last_send.page[4], 0x40);  // ALL_I_T_NEXUS
-  EXPECT_EQ(g_last_send.page[5], 0x00);
+  EXPECT_EQ(g_last_send.page[5], 0x40);  // CEEM = NO_ENCR_CHECK, CKOD = 0
   EXPECT_EQ(g_last_send.page[6], SPP_ENCR_MODE_ENCRYPT);
   EXPECT_EQ(g_last_send.page[7], SPP_DECR_MODE_MIXED);
   EXPECT_EQ(g_last_send.page[8], 0x01);
@@ -195,6 +192,19 @@ TEST_F(ScsiCryptoWireTest, SpinQueriesEmitExpectedCdbsAndParseStatus)
   EXPECT_TRUE(NeedScsiCryptoKey(9, "/dev/sg99", /*use_drive_status=*/false));
   EXPECT_EQ(g_last_recv.cdb, expected_nbes_cdb);
   FreePoolMemory(status);
+}
+
+TEST_F(ScsiCryptoWireTest, NullKeyRejectedAndCkodBuilderSetsBit)
+{
+  EXPECT_FALSE(SetScsiEncryptionKey(17, "/dev/sg99", nullptr));
+  EXPECT_TRUE(g_last_send.cdb.empty());
+
+  constexpr std::array<uint8_t, SPP_KEY_LENGTH> kKey{};
+  const SPP_PAGE_SDE ckod_page
+      = BuildSetDataEncryptionPage(kKey, 0x01, /*ckod=*/true);
+  std::array<uint8_t, sizeof(SPP_PAGE_SDE)> wire{};
+  std::memcpy(wire.data(), &ckod_page, wire.size());
+  EXPECT_EQ(wire[5], 0x44);  // CEEM = NO_ENCR_CHECK (0x40) | CKOD (0x04)
 }
 
 }  // namespace

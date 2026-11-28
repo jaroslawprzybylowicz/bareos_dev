@@ -25,8 +25,10 @@
 #ifndef BAREOS_LIB_SCSI_CRYPTO_H_
 #define BAREOS_LIB_SCSI_CRYPTO_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 /* clang-format off */
 
@@ -369,6 +371,50 @@ constexpr SPP_SCSI_CDB BuildScsiSecurityCdb(uint8_t opcode,
       = static_cast<uint8_t>((transfer_length >> 8) & 0xff);
   cdb.allocation_length[3] = static_cast<uint8_t>(transfer_length & 0xff);
   return cdb;
+}
+
+constexpr SPP_PAGE_SDE BuildSetDataEncryptionPage(
+    std::span<const uint8_t, SPP_KEY_LENGTH> key,
+    uint8_t algorithm_index = 0x01,
+    bool ckod = false) noexcept
+{
+  SPP_PAGE_SDE sps{};
+  sps.pageCode[0]
+      = static_cast<uint8_t>((SPOUT_SET_DATA_ENCRYPTION_PAGE >> 8) & 0xff);
+  sps.pageCode[1] = static_cast<uint8_t>(SPOUT_SET_DATA_ENCRYPTION_PAGE & 0xff);
+  constexpr uint16_t kPayloadLen = sizeof(SPP_PAGE_SDE) - 4;
+  sps.length[0] = static_cast<uint8_t>((kPayloadLen >> 8) & 0xff);
+  sps.length[1] = static_cast<uint8_t>(kPayloadLen & 0xff);
+  sps.nexusScope = SPP_NEXUS_SC_ALL_I_T_NEXUS;
+  sps.CEEM = SPP_CEEM_NO_ENCR_CHECK;
+  sps.CKOD = ckod ? 1 : 0;
+  sps.encryptionMode = SPP_ENCR_MODE_ENCRYPT;
+  sps.decryptionMode = SPP_DECR_MODE_MIXED;
+  sps.algorithmIndex = algorithm_index;
+  sps.keyFormat = SPP_KAD_KEY_FORMAT_NORMAL;
+  sps.kadFormat = 0;
+  sps.keyLength[0] = static_cast<uint8_t>((SPP_KEY_LENGTH >> 8) & 0xff);
+  sps.keyLength[1] = static_cast<uint8_t>(SPP_KEY_LENGTH & 0xff);
+  for (std::size_t i = 0; i < SPP_KEY_LENGTH; ++i) { sps.keyData[i] = key[i]; }
+  return sps;
+}
+
+constexpr std::array<uint8_t, kSppPageSdeHeaderLength>
+BuildClearDataEncryptionPage(uint8_t algorithm_index = 0x01) noexcept
+{
+  std::array<uint8_t, kSppPageSdeHeaderLength> page{};
+  page[0] = static_cast<uint8_t>((SPOUT_SET_DATA_ENCRYPTION_PAGE >> 8) & 0xff);
+  page[1] = static_cast<uint8_t>(SPOUT_SET_DATA_ENCRYPTION_PAGE & 0xff);
+  constexpr uint16_t kPayloadLen = kSppPageSdeHeaderLength - 4;
+  page[2] = static_cast<uint8_t>((kPayloadLen >> 8) & 0xff);
+  page[3] = static_cast<uint8_t>(kPayloadLen & 0xff);
+  page[4] = static_cast<uint8_t>((SPP_NEXUS_SC_ALL_I_T_NEXUS & 0x07) << 5);
+  page[5] = static_cast<uint8_t>((SPP_CEEM_NO_ENCR_CHECK & 0x03) << 6);
+  page[6] = SPP_ENCR_MODE_DISABLE;
+  page[7] = SPP_DECR_MODE_DISABLE;
+  page[8] = algorithm_index;
+  page[9] = SPP_KAD_KEY_FORMAT_NORMAL;
+  return page;
 }
 
 bool ClearScsiEncryptionKey(int fd, const char* device);
