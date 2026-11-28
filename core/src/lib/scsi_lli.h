@@ -2,7 +2,7 @@
    BAREOS® - Backup Archiving REcovery Open Sourced
 
    Copyright (C) 2011-2012 Planets Communications B.V.
-   Copyright (C) 2013-2021 Bareos GmbH & Co. KG
+   Copyright (C) 2013-2026 Bareos GmbH & Co. KG
 
    This program is Free Software; you can redistribute it and/or
    modify it under the terms of version three of the GNU Affero General Public
@@ -24,6 +24,11 @@
 
 #ifndef BAREOS_LIB_SCSI_LLI_H_
 #define BAREOS_LIB_SCSI_LLI_H_
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <span>
 
 // Device Inquiry Response
 typedef struct {
@@ -159,6 +164,41 @@ typedef struct {
   uint8_t field[2]; /* field pointer */
   uint8_t addSenseData[109];
 } SCSI_PAGE_SENSE;
+
+struct ScsiSenseInfo {
+  bool valid{false};
+  uint8_t sense_key{0};
+  uint8_t asc{0};
+  uint8_t ascq{0};
+};
+
+constexpr ScsiSenseInfo DecodeScsiSense(std::span<const uint8_t> sense) noexcept
+{
+  if (sense.empty()) { return {}; }
+  const uint8_t response_code = sense[0] & 0x7f;
+  if (response_code == 0x70 || response_code == 0x71) {
+    // Fixed-format sense data (SPC-4 section 4.5.3)
+    if (sense.size() < 3) { return {}; }
+    ScsiSenseInfo info;
+    info.valid = true;
+    info.sense_key = sense[2] & 0x0f;
+    if (sense.size() >= 8) {
+      const std::size_t avail
+          = std::min(sense.size(), static_cast<std::size_t>(8u + sense[7]));
+      if (avail >= 14) {
+        info.asc = sense[12];
+        info.ascq = sense[13];
+      }
+    }
+    return info;
+  }
+  if (response_code == 0x72 || response_code == 0x73) {
+    // Descriptor-format sense data (SPC-4 section 4.5.2)
+    if (sense.size() < 4) { return {}; }
+    return {true, static_cast<uint8_t>(sense[1] & 0x0f), sense[2], sense[3]};
+  }
+  return {};
+}
 
 bool RecvScsiCmdPage(int fd,
                      const char* device_name,

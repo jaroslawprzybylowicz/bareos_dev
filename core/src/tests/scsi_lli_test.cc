@@ -205,3 +205,42 @@ TEST_F(ScsiLliLinuxSgIoTest, FdMinusOneWithMissingDeviceFailsWithoutIoctl)
 
 }  // namespace
 #endif
+
+namespace {
+
+constexpr std::array<uint8_t, 18> kFixedUnitAttentionSense
+    = {0x70, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x0a, 0x00,
+       0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00};
+constexpr ScsiSenseInfo kDecodedUa = DecodeScsiSense(kFixedUnitAttentionSense);
+static_assert(kDecodedUa.valid);
+static_assert(kDecodedUa.sense_key == 0x06);
+static_assert(kDecodedUa.asc == 0x28);
+static_assert(kDecodedUa.ascq == 0x00);
+
+constexpr std::array<uint8_t, 18> kShortAdditionalLenSense
+    = {0x70, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00,
+       0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00};
+constexpr ScsiSenseInfo kDecodedShort
+    = DecodeScsiSense(kShortAdditionalLenSense);
+static_assert(kDecodedShort.valid);
+static_assert(kDecodedShort.sense_key == 0x06);
+static_assert(kDecodedShort.asc == 0x00);
+static_assert(kDecodedShort.ascq == 0x00);
+
+constexpr std::array<uint8_t, 8> kDescriptorIllegalReqSense
+    = {0x72, 0x05, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00};
+constexpr ScsiSenseInfo kDecodedDesc
+    = DecodeScsiSense(kDescriptorIllegalReqSense);
+static_assert(kDecodedDesc.valid);
+static_assert(kDecodedDesc.sense_key == 0x05);
+static_assert(kDecodedDesc.asc == 0x24);
+static_assert(kDecodedDesc.ascq == 0x00);
+
+TEST(ScsiLliSenseTest, DecodeInvalidOrEmptySenseReturnsInvalid)
+{
+  constexpr std::array<uint8_t, 4> kUnknown = {0x00, 0x06, 0x28, 0x00};
+  EXPECT_FALSE(DecodeScsiSense({}).valid);
+  EXPECT_FALSE(DecodeScsiSense(kUnknown).valid);
+}
+
+}  // namespace

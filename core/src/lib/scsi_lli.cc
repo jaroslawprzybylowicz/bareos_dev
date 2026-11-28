@@ -79,11 +79,17 @@ static bool ExecuteLinuxSgIo(int fd,
   }
 
   if ((io_hdr.info & SG_INFO_OK_MASK) != SG_INFO_OK) {
+    const ScsiSenseInfo decoded = DecodeScsiSense(
+        {reinterpret_cast<const uint8_t*>(&sense), io_hdr.sb_len_wr});
     Emsg3(M_ERROR, 0,
           T_("Failed with info 0x%02x mask status 0x%02x msg status 0x%02x\n"),
           io_hdr.info, io_hdr.masked_status, io_hdr.msg_status);
     Emsg2(M_ERROR, 0, T_("     host status 0x%02x driver status 0x%02x\n"),
           io_hdr.host_status, io_hdr.driver_status);
+    if (decoded.valid) {
+      Emsg3(M_ERROR, 0, T_("     sense key 0x%02x asc 0x%02x ascq 0x%02x\n"),
+            decoded.sense_key, decoded.asc, decoded.ascq);
+    }
     return false;
   }
 
