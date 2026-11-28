@@ -525,6 +525,14 @@ bareos_add_test(bpipe_env_test LINK_LIBRARIES GTest::gtest_main Bareos::Lib)
 target_compile_definitions(
   bpipe_env_test PRIVATE "-DTEST_PROGRAM=\"$<TARGET_FILE:env_tester>\""
 )
+bareos_add_test(
+  scsi_lli_test
+  ADDITIONAL_SOURCES $<$<PLATFORM_ID:Linux>:../lib/scsi_lli.cc>
+  LINK_LIBRARIES GTest::gtest_main Bareos::Lib
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_options(scsi_lli_test PRIVATE -Wl,--wrap=ioctl)
+endif()
 
 if(ENABLE_BARRI)
   if(HAVE_WIN32)
