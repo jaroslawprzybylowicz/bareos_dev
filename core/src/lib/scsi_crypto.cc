@@ -43,15 +43,6 @@ static inline void set_2_byte_value(unsigned char* field, int value)
   field[1] = (unsigned char)(value & 0x00ff);
 }
 
-// Store a value as 4 bytes MSB/LSB
-static inline void set_4_byte_value(unsigned char* field, int value)
-{
-  field[0] = (unsigned char)((value & 0xff000000) >> 24);
-  field[1] = (unsigned char)((value & 0x00ff0000) >> 16);
-  field[2] = (unsigned char)((value & 0x0000ff00) >> 8);
-  field[3] = (unsigned char)(value & 0x000000ff);
-}
-
 /*
  * Clear an encryption key used by a tape drive
  * using a lowlevel SCSI interface.
@@ -65,43 +56,21 @@ static inline void set_4_byte_value(unsigned char* field, int value)
  */
 bool ClearScsiEncryptionKey(int fd, const char* device_name)
 {
-  /* Create a SPOUT Set Encryption Key CDB and
-   *        a SPOUT Clear Encryption Mode Page */
-  SPP_SCSI_CDB cdb;
-  SPP_PAGE_BUFFER cmd_page;
-  SPP_PAGE_SDE* sps;
-  int cmd_page_len, cdb_len;
+  SPP_PAGE_SDE sps{};
+  set_2_byte_value(sps.pageCode, SPOUT_SET_DATA_ENCRYPTION_PAGE);
+  set_2_byte_value(sps.length, sizeof(sps) - 4);
+  sps.nexusScope = SPP_NEXUS_SC_ALL_I_T_NEXUS;
+  sps.encryptionMode = SPP_ENCR_MODE_DISABLE;
+  sps.decryptionMode = SPP_DECR_MODE_DISABLE;
+  sps.algorithmIndex = 0x01;
+  sps.kadFormat = SPP_KAD_KEY_FORMAT_NORMAL;
+  set_2_byte_value(sps.keyLength, SPP_KEY_LENGTH);
 
-  /* Put a SPOUT Set Data Encryption page into the start of
-   * the generic cmd_page structure. */
-  memset(&cmd_page, 0, sizeof(cmd_page));
-  sps = (SPP_PAGE_SDE*)&cmd_page;
-  set_2_byte_value(sps->pageCode, SPOUT_SET_DATA_ENCRYPTION_PAGE);
-  sps->nexusScope = SPP_NEXUS_SC_ALL_I_T_NEXUS;
-  sps->encryptionMode = SPP_ENCR_MODE_DISABLE;
-  sps->decryptionMode = SPP_DECR_MODE_DISABLE;
-  sps->algorithmIndex = 0x01;
-  sps->kadFormat = SPP_KAD_KEY_FORMAT_NORMAL;
-  set_2_byte_value(sps->keyLength, SPP_KEY_LENGTH);
-
-  // Set the length to the size of the SPP_PAGE_SDE we just filled.
-  cmd_page_len = sizeof(SPP_PAGE_SDE);
-
-  /* Set the actual size of the cmd_page - 4 into the cmd_page length field
-   * (without the pageCode and pageLength) */
-  set_2_byte_value(cmd_page.length, cmd_page_len - 4);
-
-  // Fill the SCSI CDB.
-  cdb_len = sizeof(cdb);
-  memset(&cdb, 0, cdb_len);
-  cdb.opcode = SCSI_SPOUT_OPCODE;
-  cdb.scp = SPP_SP_PROTOCOL_TDE;
-  set_2_byte_value(cdb.scp_specific, SPOUT_SET_DATA_ENCRYPTION_PAGE);
-  set_4_byte_value(cdb.allocation_length, cmd_page_len);
-
-  // Clear the encryption key.
-  return send_scsi_cmd_page(fd, device_name, (void*)&cdb, cdb_len,
-                            (void*)&cmd_page, cmd_page_len);
+  auto cdb
+      = BuildScsiSecurityCdb(SCSI_SPOUT_OPCODE, SPOUT_SET_DATA_ENCRYPTION_PAGE,
+                             static_cast<uint32_t>(sizeof(sps)));
+  return send_scsi_cmd_page(fd, device_name, &cdb, sizeof(cdb), &sps,
+                            sizeof(sps));
 }
 
 /*
@@ -117,44 +86,22 @@ bool ClearScsiEncryptionKey(int fd, const char* device_name)
  */
 bool SetScsiEncryptionKey(int fd, const char* device_name, char* encryption_key)
 {
-  /* Create a SPOUT Set Encryption Key CDB and
-   *        a SPOUT Send Encryption Key Page */
-  SPP_SCSI_CDB cdb;
-  SPP_PAGE_BUFFER cmd_page;
-  SPP_PAGE_SDE* sps;
-  int cmd_page_len, cdb_len;
+  SPP_PAGE_SDE sps{};
+  set_2_byte_value(sps.pageCode, SPOUT_SET_DATA_ENCRYPTION_PAGE);
+  set_2_byte_value(sps.length, sizeof(sps) - 4);
+  sps.nexusScope = SPP_NEXUS_SC_ALL_I_T_NEXUS;
+  sps.encryptionMode = SPP_ENCR_MODE_ENCRYPT;
+  sps.decryptionMode = SPP_DECR_MODE_MIXED;
+  sps.algorithmIndex = 0x01;
+  sps.kadFormat = SPP_KAD_KEY_FORMAT_NORMAL;
+  set_2_byte_value(sps.keyLength, SPP_KEY_LENGTH);
+  bstrncpy((char*)sps.keyData, encryption_key, SPP_KEY_LENGTH);
 
-  /* Put a SPOUT Set Data Encryption page into the start of
-   * the generic cmd_page structure. */
-  memset(&cmd_page, 0, sizeof(cmd_page));
-  sps = (SPP_PAGE_SDE*)&cmd_page;
-  set_2_byte_value(sps->pageCode, SPOUT_SET_DATA_ENCRYPTION_PAGE);
-  sps->nexusScope = SPP_NEXUS_SC_ALL_I_T_NEXUS;
-  sps->encryptionMode = SPP_ENCR_MODE_ENCRYPT;
-  sps->decryptionMode = SPP_DECR_MODE_MIXED;
-  sps->algorithmIndex = 0x01;
-  sps->kadFormat = SPP_KAD_KEY_FORMAT_NORMAL;
-  set_2_byte_value(sps->keyLength, SPP_KEY_LENGTH);
-  bstrncpy((char*)sps->keyData, encryption_key, SPP_KEY_LENGTH);
-
-  // Set the length to the size of the SPP_PAGE_SDE we just filled.
-  cmd_page_len = sizeof(SPP_PAGE_SDE);
-
-  /* Set the actual size of the cmd_page - 4 into the cmd_page length field
-   * (without the pageCode and pageLength) */
-  set_2_byte_value(cmd_page.length, cmd_page_len - 4);
-
-  // Fill the SCSI CDB.
-  cdb_len = sizeof(cdb);
-  memset(&cdb, 0, cdb_len);
-  cdb.opcode = SCSI_SPOUT_OPCODE;
-  cdb.scp = SPP_SP_PROTOCOL_TDE;
-  set_2_byte_value(cdb.scp_specific, SPOUT_SET_DATA_ENCRYPTION_PAGE);
-  set_4_byte_value(cdb.allocation_length, cmd_page_len);
-
-  // Set the new encryption key.
-  return send_scsi_cmd_page(fd, device_name, (void*)&cdb, cdb_len,
-                            (void*)&cmd_page, cmd_page_len);
+  auto cdb
+      = BuildScsiSecurityCdb(SCSI_SPOUT_OPCODE, SPOUT_SET_DATA_ENCRYPTION_PAGE,
+                             static_cast<uint32_t>(sizeof(sps)));
+  return send_scsi_cmd_page(fd, device_name, &cdb, sizeof(cdb), &sps,
+                            sizeof(sps));
 }
 
 /*
@@ -172,32 +119,20 @@ int GetScsiDriveEncryptionStatus(int fd,
                                  POOLMEM*& status,
                                  int indent)
 {
-  SPP_SCSI_CDB cdb;
-  SPP_PAGE_BUFFER cmd_page;
-  SPP_PAGE_DES* spd;
-  int cmd_page_len, cdb_len;
-
-  cmd_page_len = sizeof(cmd_page);
-  memset(&cmd_page, 0, cmd_page_len);
-
-  // Fill the SCSI CDB.
-  cdb_len = sizeof(cdb);
-  memset(&cdb, 0, cdb_len);
-  cdb.opcode = SCSI_SPIN_OPCODE;
-  cdb.scp = SPP_SP_PROTOCOL_TDE;
-  set_2_byte_value(cdb.scp_specific, SPIN_DATA_ENCR_STATUS_PAGE);
-  set_4_byte_value(cdb.allocation_length, cmd_page_len);
+  SPP_PAGE_BUFFER cmd_page{};
+  auto cdb = BuildScsiSecurityCdb(SCSI_SPIN_OPCODE, SPIN_DATA_ENCR_STATUS_PAGE,
+                                  static_cast<uint32_t>(sizeof(cmd_page)));
 
   // Retrieve the drive encryption status.
-  if (!RecvScsiCmdPage(fd, device_name, (void*)&cdb, cdb_len, (void*)&cmd_page,
-                       cmd_page_len)) {
+  if (!RecvScsiCmdPage(fd, device_name, &cdb, sizeof(cdb), &cmd_page,
+                       sizeof(cmd_page))) {
     return 0;
   }
 
   /* We got a response which should contain a SPP_PAGE_DES.
    * Create a pointer to the beginning of the generic
    * cmd_page structure. */
-  spd = (SPP_PAGE_DES*)&cmd_page;
+  SPP_PAGE_DES* spd = (SPP_PAGE_DES*)&cmd_page;
 
   PmStrcpy(status, "");
   IndentStatusMsg(status, T_("Drive encryption status:\n"), indent);
@@ -366,32 +301,21 @@ int GetScsiVolumeEncryptionStatus(int fd,
                                   POOLMEM*& status,
                                   int indent)
 {
-  SPP_SCSI_CDB cdb;
-  SPP_PAGE_BUFFER cmd_page;
-  SPP_PAGE_NBES* spnb;
-  int cmd_page_len, cdb_len;
-
-  cmd_page_len = sizeof(cmd_page);
-  memset(&cmd_page, 0, cmd_page_len);
-
-  // Fill the SCSI CDB.
-  cdb_len = sizeof(cdb);
-  memset(&cdb, 0, cdb_len);
-  cdb.opcode = SCSI_SPIN_OPCODE;
-  cdb.scp = SPP_SP_PROTOCOL_TDE;
-  set_2_byte_value(cdb.scp_specific, SPIN_NEXT_BLOCK_ENCR_STATUS_PAGE);
-  set_4_byte_value(cdb.allocation_length, cmd_page_len);
+  SPP_PAGE_BUFFER cmd_page{};
+  auto cdb
+      = BuildScsiSecurityCdb(SCSI_SPIN_OPCODE, SPIN_NEXT_BLOCK_ENCR_STATUS_PAGE,
+                             static_cast<uint32_t>(sizeof(cmd_page)));
 
   // Retrieve the volume encryption status.
-  if (!RecvScsiCmdPage(fd, device_name, (void*)&cdb, cdb_len, (void*)&cmd_page,
-                       cmd_page_len)) {
+  if (!RecvScsiCmdPage(fd, device_name, &cdb, sizeof(cdb), &cmd_page,
+                       sizeof(cmd_page))) {
     return 0;
   }
 
   /* We got a response which should contain a SPP_PAGE_NBES.
    * Create a pointer to the beginning of the generic
    * cmd_page structure. */
-  spnb = (SPP_PAGE_NBES*)&cmd_page;
+  SPP_PAGE_NBES* spnb = (SPP_PAGE_NBES*)&cmd_page;
 
   PmStrcpy(status, "");
   IndentStatusMsg(status, T_("Volume encryption status:\n"), indent);
@@ -522,30 +446,16 @@ int GetScsiVolumeEncryptionStatus(int fd,
  */
 bool NeedScsiCryptoKey(int fd, const char* device_name, bool use_drive_status)
 {
-  SPP_SCSI_CDB cdb;
-  SPP_PAGE_BUFFER cmd_page;
-  SPP_PAGE_DES* spd;
-  SPP_PAGE_NBES* spnb;
-  int cmd_page_len, cdb_len;
-
-  cmd_page_len = sizeof(cmd_page);
-  memset(&cmd_page, 0, cmd_page_len);
-
-  // Fill the SCSI CDB.
-  cdb_len = sizeof(cdb);
-  memset(&cdb, 0, cdb_len);
-  cdb.opcode = SCSI_SPIN_OPCODE;
-  cdb.scp = SPP_SP_PROTOCOL_TDE;
-  if (use_drive_status) {
-    set_2_byte_value(cdb.scp_specific, SPIN_DATA_ENCR_STATUS_PAGE);
-  } else {
-    set_2_byte_value(cdb.scp_specific, SPIN_NEXT_BLOCK_ENCR_STATUS_PAGE);
-  }
-  set_4_byte_value(cdb.allocation_length, cmd_page_len);
+  SPP_PAGE_BUFFER cmd_page{};
+  const uint16_t page_code = use_drive_status
+                                 ? SPIN_DATA_ENCR_STATUS_PAGE
+                                 : SPIN_NEXT_BLOCK_ENCR_STATUS_PAGE;
+  auto cdb = BuildScsiSecurityCdb(SCSI_SPIN_OPCODE, page_code,
+                                  static_cast<uint32_t>(sizeof(cmd_page)));
 
   // Retrieve the volume encryption status.
-  if (!RecvScsiCmdPage(fd, device_name, (void*)&cdb, cdb_len, (void*)&cmd_page,
-                       cmd_page_len)) {
+  if (!RecvScsiCmdPage(fd, device_name, &cdb, sizeof(cdb), &cmd_page,
+                       sizeof(cmd_page))) {
     return false;
   }
 
@@ -553,7 +463,7 @@ bool NeedScsiCryptoKey(int fd, const char* device_name, bool use_drive_status)
     /* We got a response which should contain a SPP_PAGE_DES.
      * Create a pointer to the beginning of the generic
      * cmd_page structure. */
-    spd = (SPP_PAGE_DES*)&cmd_page;
+    SPP_PAGE_DES* spd = (SPP_PAGE_DES*)&cmd_page;
 
     /* Return the status of the Volume Contains Encrypted Logical Blocks (VCELB)
      * field. */
@@ -562,7 +472,7 @@ bool NeedScsiCryptoKey(int fd, const char* device_name, bool use_drive_status)
     /* We got a response which should contain a SPP_PAGE_NBES.
      * Create a pointer to the beginning of the generic
      * cmd_page structure. */
-    spnb = (SPP_PAGE_NBES*)&cmd_page;
+    SPP_PAGE_NBES* spnb = (SPP_PAGE_NBES*)&cmd_page;
 
     /* If the encryptionStatus is set to encrypted or encrypted but valid key
      * not available we know we need to load a key to decrypt the data. */
@@ -587,32 +497,20 @@ bool NeedScsiCryptoKey(int fd, const char* device_name, bool use_drive_status)
  */
 bool IsScsiEncryptionEnabled(int fd, const char* device_name)
 {
-  SPP_SCSI_CDB cdb;
-  SPP_PAGE_BUFFER cmd_page;
-  SPP_PAGE_DES* spd;
-  int cmd_page_len, cdb_len;
-
-  cmd_page_len = sizeof(cmd_page);
-  memset(&cmd_page, 0, cmd_page_len);
-
-  // Fill the SCSI CDB.
-  cdb_len = sizeof(cdb);
-  memset(&cdb, 0, cdb_len);
-  cdb.opcode = SCSI_SPIN_OPCODE;
-  cdb.scp = SPP_SP_PROTOCOL_TDE;
-  set_2_byte_value(cdb.scp_specific, SPIN_DATA_ENCR_STATUS_PAGE);
-  set_4_byte_value(cdb.allocation_length, cmd_page_len);
+  SPP_PAGE_BUFFER cmd_page{};
+  auto cdb = BuildScsiSecurityCdb(SCSI_SPIN_OPCODE, SPIN_DATA_ENCR_STATUS_PAGE,
+                                  static_cast<uint32_t>(sizeof(cmd_page)));
 
   // Retrieve the drive encryption status.
-  if (!RecvScsiCmdPage(fd, device_name, (void*)&cdb, cdb_len, (void*)&cmd_page,
-                       cmd_page_len)) {
+  if (!RecvScsiCmdPage(fd, device_name, &cdb, sizeof(cdb), &cmd_page,
+                       sizeof(cmd_page))) {
     return false;
   }
 
   /* We got a response which should contain a SPP_PAGE_DES.
    * Create a pointer to the beginning of the generic
    * cmd_page structure. */
-  spd = (SPP_PAGE_DES*)&cmd_page;
+  SPP_PAGE_DES* spd = (SPP_PAGE_DES*)&cmd_page;
 
   /* When either encryptionMode or decryptionMode are not disabled we return
    * true */

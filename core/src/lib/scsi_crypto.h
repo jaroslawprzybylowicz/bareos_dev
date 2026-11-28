@@ -2,7 +2,7 @@
    BAREOS® - Backup Archiving REcovery Open Sourced
 
    Copyright (C) 2011-2012 Planets Communications B.V.
-   Copyright (C) 2013-2021 Bareos GmbH & Co. KG
+   Copyright (C) 2013-2026 Bareos GmbH & Co. KG
 
    This program is Free Software; you can redistribute it and/or
    modify it under the terms of version three of the GNU Affero General Public
@@ -24,6 +24,9 @@
 
 #ifndef BAREOS_LIB_SCSI_CRYPTO_H_
 #define BAREOS_LIB_SCSI_CRYPTO_H_
+
+#include <cstddef>
+#include <cstdint>
 
 /* clang-format off */
 
@@ -345,6 +348,28 @@ typedef struct {
 } SPP_KAD;
 
 /* clang-format on */
+
+inline constexpr std::size_t kSppPageSdeHeaderLength = 20;
+static_assert(sizeof(SPP_PAGE_SDE) == kSppPageSdeHeaderLength + SPP_KEY_LENGTH);
+
+constexpr SPP_SCSI_CDB BuildScsiSecurityCdb(uint8_t opcode,
+                                            uint16_t page_code,
+                                            uint32_t transfer_length) noexcept
+{
+  SPP_SCSI_CDB cdb{};
+  cdb.opcode = opcode;
+  cdb.scp = SPP_SP_PROTOCOL_TDE;
+  cdb.scp_specific[0] = static_cast<uint8_t>((page_code >> 8) & 0xff);
+  cdb.scp_specific[1] = static_cast<uint8_t>(page_code & 0xff);
+  cdb.allocation_length[0]
+      = static_cast<uint8_t>((transfer_length >> 24) & 0xff);
+  cdb.allocation_length[1]
+      = static_cast<uint8_t>((transfer_length >> 16) & 0xff);
+  cdb.allocation_length[2]
+      = static_cast<uint8_t>((transfer_length >> 8) & 0xff);
+  cdb.allocation_length[3] = static_cast<uint8_t>(transfer_length & 0xff);
+  return cdb;
+}
 
 bool ClearScsiEncryptionKey(int fd, const char* device);
 bool SetScsiEncryptionKey(int fd, const char* device, char* encryption_key);
